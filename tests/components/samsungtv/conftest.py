@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Generator
 from datetime import datetime
-from socket import AddressFamily
+from socket import AddressFamily  # pylint: disable=no-name-in-module
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -30,7 +30,7 @@ from tests.common import async_mock_service
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock, None, None]:
+def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
     with patch(
         "homeassistant.components.samsungtv.async_setup_entry", return_value=True
@@ -53,11 +53,6 @@ async def silent_ssdp_scanner(hass):
         ),
     ):
         yield
-
-
-@pytest.fixture(autouse=True)
-def samsungtv_mock_get_source_ip(mock_get_source_ip):
-    """Mock network util's async_get_source_ip."""
 
 
 @pytest.fixture(autouse=True)

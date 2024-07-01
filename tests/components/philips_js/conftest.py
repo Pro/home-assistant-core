@@ -14,7 +14,7 @@ from tests.common import MockConfigEntry, mock_device_registry
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock, None, None]:
+def mock_setup_entry() -> Generator[AsyncMock]:
     """Disable component setup."""
     with (
         patch(

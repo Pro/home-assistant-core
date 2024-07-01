@@ -35,12 +35,17 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
+from homeassistant.components.sensor import ATTR_STATE_CLASS
 from homeassistant.const import (
+    ATTR_DEVICE_CLASS,
+    ATTR_FRIENDLY_NAME,
+    ATTR_UNIT_OF_MEASUREMENT,
+    MATCH_ALL,
     MAX_LENGTH_EVENT_EVENT_TYPE,
     MAX_LENGTH_STATE_ENTITY_ID,
     MAX_LENGTH_STATE_STATE,
 )
-from homeassistant.core import Context, Event, EventOrigin, State
+from homeassistant.core import Context, Event, EventOrigin, EventStateChangedData, State
 from homeassistant.helpers.json import JSON_DUMP, json_bytes, json_bytes_strip_null
 import homeassistant.util.dt as dt_util
 from homeassistant.util.json import (
@@ -137,6 +142,13 @@ _DEFAULT_TABLE_ARGS = {
     "mariadb_engine": MYSQL_ENGINE,
 }
 
+_MATCH_ALL_KEEP = {
+    ATTR_DEVICE_CLASS,
+    ATTR_STATE_CLASS,
+    ATTR_UNIT_OF_MEASUREMENT,
+    ATTR_FRIENDLY_NAME,
+}
+
 
 class UnusedDateTime(DateTime):
     """An unused column type that behaves like a datetime."""
@@ -226,7 +238,6 @@ class JSONLiteral(JSON):
 
 
 EVENT_ORIGIN_ORDER = [EventOrigin.local, EventOrigin.remote]
-EVENT_ORIGIN_TO_IDX = {origin: idx for idx, origin in enumerate(EVENT_ORIGIN_ORDER)}
 
 
 class Events(Base):
@@ -293,18 +304,19 @@ class Events(Base):
     @staticmethod
     def from_event(event: Event) -> Events:
         """Create an event database object from a native event."""
+        context = event.context
         return Events(
             event_type=None,
             event_data=None,
-            origin_idx=EVENT_ORIGIN_TO_IDX.get(event.origin),
+            origin_idx=event.origin.idx,
             time_fired=None,
             time_fired_ts=event.time_fired_timestamp,
             context_id=None,
-            context_id_bin=ulid_to_bytes_or_none(event.context.id),
+            context_id_bin=ulid_to_bytes_or_none(context.id),
             context_user_id=None,
-            context_user_id_bin=uuid_hex_to_bytes_or_none(event.context.user_id),
+            context_user_id_bin=uuid_hex_to_bytes_or_none(context.user_id),
             context_parent_id=None,
-            context_parent_id_bin=ulid_to_bytes_or_none(event.context.parent_id),
+            context_parent_id_bin=ulid_to_bytes_or_none(context.parent_id),
         )
 
     def to_native(self, validate_entity_id: bool = True) -> Event | None:
@@ -478,43 +490,44 @@ class States(Base):
         return date_time.isoformat(sep=" ", timespec="seconds")
 
     @staticmethod
-    def from_event(event: Event) -> States:
+    def from_event(event: Event[EventStateChangedData]) -> States:
         """Create object from a state_changed event."""
-        entity_id = event.data["entity_id"]
-        state: State | None = event.data.get("new_state")
-        dbstate = States(
-            entity_id=entity_id,
-            attributes=None,
-            context_id=None,
-            context_id_bin=ulid_to_bytes_or_none(event.context.id),
-            context_user_id=None,
-            context_user_id_bin=uuid_hex_to_bytes_or_none(event.context.user_id),
-            context_parent_id=None,
-            context_parent_id_bin=ulid_to_bytes_or_none(event.context.parent_id),
-            origin_idx=EVENT_ORIGIN_TO_IDX.get(event.origin),
-            last_updated=None,
-            last_changed=None,
-        )
+        state = event.data["new_state"]
         # None state means the state was removed from the state machine
         if state is None:
-            dbstate.state = ""
-            dbstate.last_updated_ts = event.time_fired_timestamp
-            dbstate.last_changed_ts = None
-            dbstate.last_reported_ts = None
-            return dbstate
-
-        dbstate.state = state.state
-        dbstate.last_updated_ts = state.last_updated_timestamp
-        if state.last_updated == state.last_changed:
-            dbstate.last_changed_ts = None
+            state_value = ""
+            last_updated_ts = event.time_fired_timestamp
+            last_changed_ts = None
+            last_reported_ts = None
         else:
-            dbstate.last_changed_ts = state.last_changed_timestamp
-        if state.last_updated == state.last_reported:
-            dbstate.last_reported_ts = None
-        else:
-            dbstate.last_reported_ts = state.last_reported_timestamp
-
-        return dbstate
+            state_value = state.state
+            last_updated_ts = state.last_updated_timestamp
+            if state.last_updated == state.last_changed:
+                last_changed_ts = None
+            else:
+                last_changed_ts = state.last_changed_timestamp
+            if state.last_updated == state.last_reported:
+                last_reported_ts = None
+            else:
+                last_reported_ts = state.last_reported_timestamp
+        context = event.context
+        return States(
+            state=state_value,
+            entity_id=event.data["entity_id"],
+            attributes=None,
+            context_id=None,
+            context_id_bin=ulid_to_bytes_or_none(context.id),
+            context_user_id=None,
+            context_user_id_bin=uuid_hex_to_bytes_or_none(context.user_id),
+            context_parent_id=None,
+            context_parent_id_bin=ulid_to_bytes_or_none(context.parent_id),
+            origin_idx=event.origin.idx,
+            last_updated=None,
+            last_changed=None,
+            last_updated_ts=last_updated_ts,
+            last_changed_ts=last_changed_ts,
+            last_reported_ts=last_reported_ts,
+        )
 
     def to_native(self, validate_entity_id: bool = True) -> State | None:
         """Convert to an HA state object."""
@@ -576,19 +589,24 @@ class StateAttributes(Base):
 
     @staticmethod
     def shared_attrs_bytes_from_event(
-        event: Event,
+        event: Event[EventStateChangedData],
         dialect: SupportedDialect | None,
     ) -> bytes:
         """Create shared_attrs from a state_changed event."""
-        state: State | None = event.data.get("new_state")
         # None state means the state was removed from the state machine
-        if state is None:
+        if (state := event.data["new_state"]) is None:
             return b"{}"
         if state_info := state.state_info:
+            unrecorded_attributes = state_info["unrecorded_attributes"]
             exclude_attrs = {
                 *ALL_DOMAIN_EXCLUDE_ATTRS,
-                *state_info["unrecorded_attributes"],
+                *unrecorded_attributes,
             }
+            if MATCH_ALL in unrecorded_attributes:
+                # Don't exclude device class, state class, unit of measurement
+                # or friendly name when using the MATCH_ALL exclude constant
+                exclude_attrs.update(state.attributes)
+                exclude_attrs -= _MATCH_ALL_KEEP
         else:
             exclude_attrs = ALL_DOMAIN_EXCLUDE_ATTRS
         encoder = json_bytes_strip_null if dialect == PSQL_DIALECT else json_bytes
@@ -715,6 +733,7 @@ class Statistics(Base, StatisticsBase):
             "start_ts",
             unique=True,
         ),
+        _DEFAULT_TABLE_ARGS,
     )
     __tablename__ = TABLE_STATISTICS
 
@@ -732,6 +751,7 @@ class StatisticsShortTerm(Base, StatisticsBase):
             "start_ts",
             unique=True,
         ),
+        _DEFAULT_TABLE_ARGS,
     )
     __tablename__ = TABLE_STATISTICS_SHORT_TERM
 
@@ -760,7 +780,10 @@ class StatisticsMeta(Base):
 class RecorderRuns(Base):
     """Representation of recorder run."""
 
-    __table_args__ = (Index("ix_recorder_runs_start_end", "start", "end"),)
+    __table_args__ = (
+        Index("ix_recorder_runs_start_end", "start", "end"),
+        _DEFAULT_TABLE_ARGS,
+    )
     __tablename__ = TABLE_RECORDER_RUNS
     run_id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
     start: Mapped[datetime] = mapped_column(DATETIME_TYPE, default=dt_util.utcnow)
@@ -789,6 +812,7 @@ class MigrationChanges(Base):
     """Representation of migration changes."""
 
     __tablename__ = TABLE_MIGRATION_CHANGES
+    __table_args__ = (_DEFAULT_TABLE_ARGS,)
 
     migration_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     version: Mapped[int] = mapped_column(SmallInteger)
@@ -798,6 +822,8 @@ class SchemaChanges(Base):
     """Representation of schema version changes."""
 
     __tablename__ = TABLE_SCHEMA_CHANGES
+    __table_args__ = (_DEFAULT_TABLE_ARGS,)
+
     change_id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
     schema_version: Mapped[int | None] = mapped_column(Integer)
     changed: Mapped[datetime] = mapped_column(DATETIME_TYPE, default=dt_util.utcnow)
@@ -816,6 +842,8 @@ class StatisticsRuns(Base):
     """Representation of statistics run."""
 
     __tablename__ = TABLE_STATISTICS_RUNS
+    __table_args__ = (_DEFAULT_TABLE_ARGS,)
+
     run_id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
     start: Mapped[datetime] = mapped_column(DATETIME_TYPE, index=True)
 
