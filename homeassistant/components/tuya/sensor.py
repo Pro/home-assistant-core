@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from .number import TuyaTankLevelNumberEntity
 
 from . import TuyaConfigEntry
 from .base import ElectricityTypeData, EnumTypeData, IntegerTypeData, TuyaEntity
@@ -435,6 +436,7 @@ SENSORS: dict[str, tuple[TuyaSensorEntityDescription, ...]] = {
         ),
         *BATTERY_SENSORS,
     ),
+    
     # Door and Window Controller
     # https://developer.tuya.com/en/docs/iot/s?id=K9gf48r5zjsy9
     "mc": BATTERY_SENSORS,
@@ -1172,6 +1174,16 @@ async def async_setup_entry(
                 )
 
         async_add_entities(entities)
+        
+        # Añade las nuevas entidades numéricas
+        # Support for Tuya sensors
+        # Ref: https://github.com/home-assistant/core/pull/114481
+        async_add_entities([
+            TuyaTankLevelNumberEntity(coordinator, entry, "INSTALATION_HEIGHT", "Installation Height"),
+            TuyaTankLevelNumberEntity(coordinator, entry, "MAX_SET", "Max Set"),
+            TuyaTankLevelNumberEntity(coordinator, entry, "MINI_SET", "Mini Set"),
+            TuyaTankLevelNumberEntity(coordinator, entry, "LIQUID_DEPTH_MAX", "Liquid Depth Max"),
+        ])
 
     async_discover_device([*hass_data.manager.device_map])
 

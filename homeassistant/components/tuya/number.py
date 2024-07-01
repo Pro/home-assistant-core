@@ -1,3 +1,6 @@
+# Adding support for Tank A Level sensor as numeric entities
+# Ref: https://github.com/home-assistant/core/pull/114481
+
 """Support for Tuya number."""
 
 from __future__ import annotations
@@ -284,7 +287,29 @@ NUMBERS: dict[str, tuple[NumberEntityDescription, ...]] = {
             translation_key="temperature",
             device_class=NumberDeviceClass.TEMPERATURE,
         ),
-    ),
+    ),# Tank Level Sensor (New addition)
+    "ywcgq": (
+        NumberEntityDescription(
+            key=DPCode.INSTALLATION_HEIGHT,
+            translation_key="installation_height",
+            entity_category=EntityCategory.CONFIG,
+        ),
+        NumberEntityDescription(
+            key=DPCode.MAX_SET,
+            translation_key="max_set",
+            entity_category=EntityCategory.CONFIG,
+        ),
+        NumberEntityDescription(
+            key=DPCode.MINI_SET,
+            translation_key="mini_set",
+            entity_category=EntityCategory.CONFIG,
+        ),
+        NumberEntityDescription(
+            key=DPCode.LIQUID_DEPTH_MAX,
+            translation_key="liquid_depth_max",
+            entity_category=EntityCategory.CONFIG,
+        ),
+    ),  
 }
 
 
@@ -339,6 +364,14 @@ class TuyaNumberEntity(TuyaEntity, NumberEntity):
             self._attr_native_max_value = self._number.max_scaled
             self._attr_native_min_value = self._number.min_scaled
             self._attr_native_step = self._number.step_scaled
+
+        # Discover and add numeric entity of level tank sensor
+        if descriptions := NUMBERS.get(device.category):
+            entities.extend(
+                TuyaNumberEntity(device, hass_data.manager, description)
+                for description in descriptions
+                if description.key in device.status
+            )
 
         # Logic to ensure the set device class and API received Unit Of Measurement
         # match Home Assistants requirements.
